@@ -249,13 +249,18 @@ pub struct ArrowBatchReader {
 impl ArrowBatchReader {
 
     pub fn new(
-        config: &ArrowBatchConfig,
-        defs: &ArrowBatchContext
+        config: &ArrowBatchConfig
     ) -> Self {
         let table_cache = HashMap::new();
         let table_file_map = HashMap::new();
-        let mut table_mappings = defs.others.clone();
 
+        let data_def_string = fs::read_to_string(
+            PathBuf::from(&config.data_dir).join("context.json")).unwrap();
+
+        let defs: ArrowBatchContext = serde_json::from_str(
+            &data_def_string).expect("Invalid format");
+
+        let mut table_mappings = defs.others.clone();
         let mut root_mappings = defs.root.map.clone();
 
         root_mappings.insert(
@@ -468,15 +473,11 @@ mod tests {
 
     #[test]
     fn test_reader() {
-        let defs_path = "../telosevm-translator/arrow-data-beta/context.json";
-        let data_def_string = fs::read_to_string(defs_path).unwrap();
-        let defs: ArrowBatchContext = serde_json::from_str(&data_def_string).expect("Invalid format");
         let mut reader = ArrowBatchReader::new(
             &ArrowBatchConfig {
                 data_dir: "../telosevm-translator/arrow-data-beta".to_string(),
                 bucket_size: 10_000_000, dump_size: 100_000
-            },
-            &defs
+            }
         );
 
         reader.reload_on_disk_buckets();
