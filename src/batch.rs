@@ -228,7 +228,7 @@ pub fn read_row(record_batch: &RecordBatch, mapping: &Vec<ArrowTableMapping>, ro
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct ArrowBatchConfig {
+pub struct ArrowBatchConfig {
     data_dir: String,
     bucket_size: u64,
     dump_size: u64
@@ -236,7 +236,7 @@ struct ArrowBatchConfig {
 
 pub const DEFAULT_TABLE_CACHE_SIZE: usize = 10;
 
-struct ArrowBatchReader {
+pub struct ArrowBatchReader {
     config: ArrowBatchConfig,
     table_cache: HashMap<String, RecordBatch>,
 
@@ -336,7 +336,7 @@ impl ArrowBatchReader {
         }
     }
 
-    fn reload_on_disk_buckets(&mut self) {
+    pub fn reload_on_disk_buckets(&mut self) {
         self.table_file_map.clear();
         let buckets = fs::read_dir(&self.config.data_dir)
             .unwrap_or_else(|_| panic!("Failed to read directory {}", &self.config.data_dir))
@@ -365,7 +365,7 @@ impl ArrowBatchReader {
         }
     }
 
-    fn get_root_row(&mut self, ordinal: u64) -> Result<Vec<ArrowBatchTypes>, ArrowError> {
+    pub fn get_root_row(&mut self, ordinal: u64) -> Result<Vec<ArrowBatchTypes>, ArrowError> {
         let adjusted_ordinal = self.get_ordinal(ordinal);
 
         let table_map = self.table_file_map.get(&adjusted_ordinal).expect("Could not fetch row");
