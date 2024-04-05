@@ -1,3 +1,3 @@
-mod proto;
-mod batch;
-mod utils;
+pub mod proto;
+pub mod batch;
+pub mod utils;
