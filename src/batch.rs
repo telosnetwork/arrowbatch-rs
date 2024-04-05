@@ -229,9 +229,9 @@ pub fn read_row(record_batch: &RecordBatch, mapping: &Vec<ArrowTableMapping>, ro
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ArrowBatchConfig {
-    data_dir: String,
-    bucket_size: u64,
-    dump_size: u64
+    pub data_dir: String,
+    pub bucket_size: u64,
+    pub dump_size: u64
 }
 
 pub const DEFAULT_TABLE_CACHE_SIZE: usize = 10;
