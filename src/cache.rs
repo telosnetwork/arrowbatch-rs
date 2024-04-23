@@ -1,0 +1,160 @@
+use std::collections::HashMap;
+use std::time::SystemTime;
+
+use arrow::record_batch::RecordBatch;
+
+use crate::{proto::{ArrowBatchTypes, ArrowBatchFileMetadata, read_metadata, read_batch, read_row}, reader::ArrowBatchReader};
+
+
+pub struct ArrowMetaCacheEntry {
+    ts: SystemTime,
+    meta: ArrowBatchFileMetadata,
+    start_row: Vec<ArrowBatchTypes>,
+}
+
+pub struct ArrowCachedTables {
+    root: RecordBatch,
+    others: HashMap<String, RecordBatch>,
+}
+
+pub struct ArrowBatchCache {
+    reader: ArrowBatchReader,
+    table_cache: HashMap<String, ArrowCachedTables>,
+    cache_order: Vec<String>,
+    metadata_cache: HashMap<String, ArrowMetaCacheEntry>,
+}
+
+impl ArrowBatchCache {
+    const DEFAULT_TABLE_CACHE: usize = 10;
+
+    pub fn new(reader: ArrowBatchReader) -> Self {
+        ArrowBatchCache {
+            reader,
+            table_cache: HashMap::new(),
+            cache_order: Vec::new(),
+            metadata_cache: HashMap::new(),
+        }
+    }
+
+    pub fn get_metadata_for(
+        &mut self,
+        adjusted_ordinal: u64,
+        table_name: &str,
+    ) -> (String, bool) {
+        let file_path = self
+            .reader
+            .table_file_map
+            .get(&adjusted_ordinal)
+            .and_then(|m| m.get(table_name))
+            .expect("File path not found");
+
+        let meta = read_metadata(file_path).unwrap();
+
+        let cache_key = format!("{}-{}", adjusted_ordinal, table_name);
+
+        if let Some(cached_meta) = self.metadata_cache.get(cache_key.as_str()) {
+            if cached_meta.meta.size == meta.size {
+                return (cache_key, false);
+            }
+            self.metadata_cache.remove(cache_key.as_str());
+        }
+
+        let first_table = read_batch(file_path, &meta, 0).unwrap();
+        let mapping = self.reader.table_mappings.get("root").unwrap();
+        let start_row = read_row(&first_table, mapping, 0).unwrap();
+
+        self.metadata_cache.insert(cache_key.clone(), ArrowMetaCacheEntry {
+            ts: SystemTime::now(),
+            meta,
+            start_row,
+        });
+        (
+            cache_key,
+            true
+        )
+    }
+
+    pub fn direct_load_table(
+        &self,
+        table_name: &str,
+        adjusted_ordinal: u64,
+        batch_index: usize,
+    ) -> (String, Option<RecordBatch>) {
+        let file_path = self
+            .reader
+            .table_file_map
+            .get(&adjusted_ordinal)
+            .and_then(|m| m.get(table_name));
+
+        match file_path {
+            Some(path) => {
+                let metadata = read_metadata(path).unwrap();
+                let table = read_batch(path, &metadata, batch_index).unwrap();
+                (table_name.to_string(), Some(table))
+            }
+            None => (table_name.to_string(), None),
+        }
+    }
+
+    pub fn get_tables_for(&mut self, ordinal: u64) -> Option<String> {
+        let adjusted_ordinal = self.reader.get_ordinal(ordinal);
+
+        let (bucket_metadata_key, metadata_updated) =
+            self.get_metadata_for(adjusted_ordinal, "root");
+
+        let bucket_metadata = self.metadata_cache.get(bucket_metadata_key.as_str()).unwrap();
+
+        let start_ord = match &bucket_metadata.start_row[0] {
+            ArrowBatchTypes::U64(val) => val,
+            _ => panic!("expected index 0 of root row to be u64!")
+        };
+        let relative_index = ordinal - start_ord;
+        let batch_index = (relative_index / self.reader.config.dump_size as u64) as usize;
+
+        let cache_key = format!("{}-{}", adjusted_ordinal, batch_index);
+
+        if !metadata_updated {
+            return Some(cache_key);
+        } else {
+            self.table_cache.remove(&cache_key);
+        }
+
+        let table_load_list = std::iter::once(self.direct_load_table("root", adjusted_ordinal, batch_index))
+            .chain(
+                self.reader
+                    .table_mappings
+                    .keys()
+                    .map(|table_name| {
+                        self.direct_load_table(table_name, adjusted_ordinal, batch_index)
+                    }),
+            )
+            .collect::<Vec<_>>();
+
+        let mut tables = ArrowCachedTables {
+            root: table_load_list[0].1.as_ref().expect("Root table not found").clone(),
+            others: HashMap::new(),
+        };
+
+        for (table_name, table) in table_load_list.into_iter().skip(1) {
+            if let Some(table) = table {
+                tables.others.insert(table_name, table);
+            }
+        }
+
+        self.table_cache.insert(cache_key.clone(), tables);
+        self.cache_order.push(cache_key.clone());
+
+        if self.table_cache.len() > Self::DEFAULT_TABLE_CACHE {
+            self.cache_order.remove(0);
+            if let Some(oldest) = self.cache_order.first() {
+                self.table_cache.remove(oldest);
+            }
+        }
+
+        Some(cache_key)
+    }
+
+    pub fn size(&self) -> usize {
+        self.table_cache.len()
+    }
+}
