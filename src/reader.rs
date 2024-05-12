@@ -2,14 +2,22 @@ use std::fs;
 use std::path::PathBuf;
 use std::collections::HashMap;
 
-use crate::proto::{read_metadata, read_batch};
-
-use arrow::array::RecordBatch;
-use arrow::error::ArrowError;
-
 use serde::{Serialize, Deserialize};
-use crate::proto::{ArrowTableMapping, ArrowBatchTypes, read_row};
 
+use crate::proto::{
+    read_row, ArrowBatchTypes, ArrowTableMapping
+};
+
+use crate::cache::{ArrowBatchCache, ArrowCachedTables};
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RefInfo {
+    pub parent_index: usize,
+    pub parent_mapping: ArrowTableMapping,
+    pub child_index: usize,
+    pub child_mapping: ArrowTableMapping
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ArrowBatchRootTable {
@@ -17,7 +25,6 @@ pub struct ArrowBatchRootTable {
     pub ordinal: String,
     pub map: Vec<ArrowTableMapping>
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ArrowBatchContextDef {
@@ -32,24 +39,65 @@ pub struct ArrowBatchConfig {
     pub dump_size: u64
 }
 
-pub const DEFAULT_TABLE_CACHE_SIZE: usize = 10;
-
-pub struct ArrowBatchReader {
-    pub config: ArrowBatchConfig,
-    pub table_cache: HashMap<String, RecordBatch>,
-
-    pub data_definition: ArrowBatchContextDef,
-
-    pub table_file_map: HashMap<u64, HashMap<String, String>>,
-    pub table_mappings: HashMap<String, Vec<ArrowTableMapping>>
+#[derive(Debug, Clone)]
+pub struct RowWithRefs {
+    pub row: Vec<ArrowBatchTypes>,
+    pub refs: HashMap<String, Vec<RowWithRefs>>
 }
 
-impl ArrowBatchReader {
+pub const DEFAULT_TABLE_CACHE_SIZE: usize = 10;
 
+pub type TableFileMap = HashMap<u64, HashMap<String, String>>;
+pub type TableMappings = HashMap<String, Vec<ArrowTableMapping>>;
+pub type ReferenceMappings = HashMap<String, HashMap<String, RefInfo>>;
+
+pub struct ArrowBatchContext {
+    pub config: ArrowBatchConfig,
+    pub data_definition: ArrowBatchContextDef,
+
+    pub table_file_map: TableFileMap,
+    pub table_mappings: TableMappings,
+    pub ref_mappings: ReferenceMappings
+}
+
+fn get_table_mapping<'a>(table_name: &String, table_mappings: &'a TableMappings) -> &'a Vec<ArrowTableMapping> {
+    match table_mappings.get(table_name) {
+        Some(mapping) => return mapping,
+        None => panic!("No mapping for table \"{}\"", table_name)
+    }
+}
+
+fn gen_mappings_for_table(table_name: &String, table_mappings: &TableMappings) -> HashMap<String, RefInfo> {
+    let mut ref_mappings = HashMap::new();
+
+    let table_mapping = get_table_mapping(table_name, table_mappings);
+
+    for (ref_name, ref_mapping) in table_mappings.iter() {
+        if let Some(child_index) = ref_mapping.iter()
+            .position(|field| field.reference.as_ref().is_some_and(|r| r.table == *table_name)) {
+
+            let child_mapping = ref_mapping[child_index].clone();
+            let parent_index = table_mapping.iter()
+                .position(|m| m.name == child_mapping.reference.as_ref().unwrap().field).unwrap();
+
+            let parent_mapping = table_mapping[parent_index].clone();
+
+            ref_mappings.insert(ref_name.clone(), RefInfo {
+                child_index,
+                child_mapping,
+                parent_index,
+                parent_mapping
+            });
+        }
+    }
+
+    ref_mappings
+}
+
+impl ArrowBatchContext {
     pub fn new(
-        config: &ArrowBatchConfig
+        config: ArrowBatchConfig
     ) -> Self {
-        let table_cache = HashMap::new();
         let table_file_map = HashMap::new();
 
         let data_def_string = fs::read_to_string(
@@ -71,14 +119,22 @@ impl ArrowBatchReader {
 
         table_mappings.insert("root".to_string(), root_mappings);
 
-        ArrowBatchReader {
-            config: config.clone(),
-            table_cache,
+        let mut ref_mappings = HashMap::new();
 
-            data_definition: defs.clone(),
+        for (table_name, _table_mapping) in table_mappings.iter() {
+            ref_mappings.insert(
+                table_name.clone(),
+                gen_mappings_for_table(table_name, &table_mappings)
+            );
+        }
+
+        ArrowBatchContext {
+            config,
+            data_definition: defs,
 
             table_file_map,
-            table_mappings
+            table_mappings,
+            ref_mappings
         }
     }
 
@@ -105,7 +161,9 @@ impl ArrowBatchReader {
     }
 
     fn load_table_file_map(&mut self, bucket: &str) {
-        let bucket_full_path = PathBuf::from(&self.config.data_dir).join(bucket);
+        let bucket_full_path = PathBuf::from(
+            &self.config.data_dir).join(bucket);
+
         let table_files = fs::read_dir(&bucket_full_path)
             .unwrap_or_else(|_| panic!("Failed to read directory {:?}", bucket_full_path))
             .filter_map(|entry| {
@@ -167,48 +225,137 @@ impl ArrowBatchReader {
             self.load_table_file_map(bucket);
         }
     }
+}
 
-    pub fn get_root_row(&mut self, ordinal: u64) -> Result<Vec<ArrowBatchTypes>, ArrowError> {
-        let adjusted_ordinal = self.get_ordinal(ordinal);
+pub struct ArrowBatchReader<'a> {
+    context: &'a ArrowBatchContext,
+    cache: ArrowBatchCache<'a>,
+}
 
-        let table_map = self.table_file_map.get(&adjusted_ordinal).expect("Could not fetch row");
-        let table_path = table_map.get("root").expect("Could not fetch row");
+fn get_rows_by_ref(
+    context: &ArrowBatchContext,
+    referenced_table: &String,
+    referenced_field: &ArrowTableMapping,
+    reference: &ArrowBatchTypes,
+    tables: &ArrowCachedTables
+) -> HashMap<String, Vec<Vec<ArrowBatchTypes>>> {
 
-        let metadata = read_metadata(table_path.as_str())?;
-        let first_table = read_batch(table_path.as_str(), &metadata, 0)?;
+    let root_mapping = get_table_mapping(referenced_table, &context.table_mappings);
+    match root_mapping.iter()
+        .position(|m| m.name == referenced_field.name) {
+        Some(_) => (),
+        None => panic!("reference not found on table!")
+    };
 
-        let mapping = self.table_mappings.get("root").unwrap();
-        let first_row = read_row(&first_table, &mapping, 0)?;
+    let references = context.ref_mappings.get(referenced_table).unwrap();
 
-        let disk_start_ordinal = match first_row[0] {
-            ArrowBatchTypes::U64(value) => value,
-            _ => panic!("Root oridnal field is not u64!?")
-        };
-        let relative_index = ordinal - disk_start_ordinal;
-        let batch_index = relative_index / self.config.dump_size;
-        let table_index = relative_index % self.config.dump_size;
+    let mut refs = HashMap::new();
 
-        let cache_key = format!("{}-{}", adjusted_ordinal, batch_index);
+    for (table_name, table) in tables.others.iter() {
 
-        let table = if !self.table_cache.contains_key(&cache_key) {
-            let new_table = if batch_index != 0 {
-                read_batch(table_path.as_str(), &metadata, table_index as usize)?
-            } else {
-                first_table.clone()
-            };
+        if (table_name == referenced_table) ||
+            !(references.contains_key(table_name)) ||
+            (references.get(table_name)
+                .is_some_and(
+                    |r| r.child_mapping.reference.as_ref().unwrap().field != referenced_field.name))
+        {
+            continue;
+        }
 
-            // Maybe trim cache if necessary
-            if self.table_cache.len() > DEFAULT_TABLE_CACHE_SIZE {
-                let oldest_key = self.table_cache.keys().next().unwrap().clone();
-                self.table_cache.remove(&oldest_key);
+        let mut rows = Vec::new();
+
+        let mappings = get_table_mapping(table_name, &context.table_mappings);
+
+        let ref_field_idx = mappings.iter()
+            .position(|m| m.reference.as_ref().is_some_and(
+                |r| r.table == *referenced_table &&
+                    r.field == referenced_field.name)).unwrap();
+
+        let mut start_idx: i64 = -1;
+        for i in 0..table.num_rows() {
+            let row = read_row(table, mappings, i).unwrap();
+
+            if row[ref_field_idx] == *reference {
+                rows.push(row);
+
+                if start_idx == -1 {
+                    start_idx = i as i64;
+                }
+            } else if start_idx != -1 {
+                break;
+            }
+        }
+
+        refs.insert(table_name.clone(), rows);
+    }
+
+    refs
+}
+
+fn gen_refs(
+    context: &ArrowBatchContext,
+    table_name: &String,
+    row: &Vec<ArrowBatchTypes>,
+    tables: &ArrowCachedTables
+) -> RowWithRefs {
+
+    let references = match context.ref_mappings.get(table_name) {
+        Some(refs) => refs,
+        None => panic!("No references for \"{}\"", table_name)
+    };
+    let mut child_row_map = HashMap::new();
+
+    for (_ref_name, reference) in references.iter() {
+        let refs = get_rows_by_ref(
+            context,
+            &table_name,
+            &reference.parent_mapping,
+            &row[reference.parent_index],
+            tables
+        );
+
+        for (child_name, child_rows) in refs.iter() {
+            if !child_row_map.contains_key(child_name) {
+                child_row_map.insert(child_name.clone(), Vec::new());
             }
 
-            self.table_cache.insert(cache_key.clone(), new_table.clone());
-            new_table
-        } else {
-            self.table_cache.get(&cache_key).unwrap().clone()
+            let row_container = child_row_map.get_mut(child_name).unwrap();
+
+            for child_row in child_rows.iter() {
+                row_container.push(
+                    gen_refs(context, child_name, child_row, tables));
+            }
+        }
+    }
+
+    RowWithRefs { row: row.clone(), refs: child_row_map }
+
+}
+
+impl<'a> ArrowBatchReader<'a> {
+
+    pub fn new(
+        context: &'a ArrowBatchContext
+    ) -> Self {
+        ArrowBatchReader {
+            context,
+            cache: ArrowBatchCache::new(context),
+        }
+    }
+
+    pub fn get_row(&mut self, ordinal: u64) -> Option<RowWithRefs> {
+        let (start_ord, tables) = match self.cache.get_tables_for(ordinal) {
+            Some(t) => t,
+            None => panic!("Tables for \"{}\" not found!", ordinal)
         };
 
-        return read_row(&table, &mapping, batch_index as usize);
+        let relative_index = ordinal - start_ord;
+        let table_index = (relative_index % self.context.config.dump_size) as usize;
+
+        let root_mapping = self.context.table_mappings.get("root").unwrap();
+        let row = read_row(&tables.root, root_mapping, table_index).unwrap();
+        let result = gen_refs(self.context, &"root".to_string(), &row, &tables);
+
+        Some(result)
     }
 }

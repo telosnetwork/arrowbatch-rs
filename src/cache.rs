@@ -3,33 +3,41 @@ use std::time::SystemTime;
 
 use arrow::record_batch::RecordBatch;
 
-use crate::{proto::{ArrowBatchTypes, ArrowBatchFileMetadata, read_metadata, read_batch, read_row}, reader::ArrowBatchReader};
+use crate::{
+    proto::{
+        read_batch, read_metadata, read_row, ArrowBatchFileMetadata, ArrowBatchTypes
+    },
+    reader::ArrowBatchContext
+};
 
 
 pub struct ArrowMetaCacheEntry {
-    ts: SystemTime,
-    meta: ArrowBatchFileMetadata,
-    start_row: Vec<ArrowBatchTypes>,
+    pub ts: SystemTime,
+    pub meta: ArrowBatchFileMetadata,
+    pub start_row: Vec<ArrowBatchTypes>,
 }
 
 pub struct ArrowCachedTables {
-    root: RecordBatch,
-    others: HashMap<String, RecordBatch>,
+    pub root: RecordBatch,
+    pub others: HashMap<String, RecordBatch>,
 }
 
-pub struct ArrowBatchCache {
-    reader: ArrowBatchReader,
-    table_cache: HashMap<String, ArrowCachedTables>,
-    cache_order: Vec<String>,
-    metadata_cache: HashMap<String, ArrowMetaCacheEntry>,
+pub struct ArrowBatchCache<'a> {
+    context: &'a ArrowBatchContext,
+
+    pub table_cache: HashMap<String, ArrowCachedTables>,
+    pub cache_order: Vec<String>,
+    pub metadata_cache: HashMap<String, ArrowMetaCacheEntry>,
 }
 
-impl ArrowBatchCache {
+impl<'a> ArrowBatchCache<'a> {
     const DEFAULT_TABLE_CACHE: usize = 10;
 
-    pub fn new(reader: ArrowBatchReader) -> Self {
+    pub fn new(
+        context: &'a ArrowBatchContext
+    ) -> Self {
         ArrowBatchCache {
-            reader,
+            context,
             table_cache: HashMap::new(),
             cache_order: Vec::new(),
             metadata_cache: HashMap::new(),
@@ -42,11 +50,11 @@ impl ArrowBatchCache {
         table_name: &str,
     ) -> (String, bool) {
         let file_path = self
-            .reader
+            .context
             .table_file_map
             .get(&adjusted_ordinal)
             .and_then(|m| m.get(table_name))
-            .expect("File path not found");
+            .expect(format!("File path for {}-{} not found", adjusted_ordinal, table_name).as_str());
 
         let meta = read_metadata(file_path).unwrap();
 
@@ -60,7 +68,7 @@ impl ArrowBatchCache {
         }
 
         let first_table = read_batch(file_path, &meta, 0).unwrap();
-        let mapping = self.reader.table_mappings.get("root").unwrap();
+        let mapping = self.context.table_mappings.get("root").unwrap();
         let start_row = read_row(&first_table, mapping, 0).unwrap();
 
         self.metadata_cache.insert(cache_key.clone(), ArrowMetaCacheEntry {
@@ -81,7 +89,7 @@ impl ArrowBatchCache {
         batch_index: usize,
     ) -> (String, Option<RecordBatch>) {
         let file_path = self
-            .reader
+            .context
             .table_file_map
             .get(&adjusted_ordinal)
             .and_then(|m| m.get(table_name));
@@ -96,8 +104,8 @@ impl ArrowBatchCache {
         }
     }
 
-    pub fn get_tables_for(&mut self, ordinal: u64) -> Option<String> {
-        let adjusted_ordinal = self.reader.get_ordinal(ordinal);
+    pub fn get_tables_for(&mut self, ordinal: u64) -> Option<(u64, &ArrowCachedTables)> {
+        let adjusted_ordinal = self.context.get_ordinal(ordinal);
 
         let (bucket_metadata_key, metadata_updated) =
             self.get_metadata_for(adjusted_ordinal, "root");
@@ -109,19 +117,19 @@ impl ArrowBatchCache {
             _ => panic!("expected index 0 of root row to be u64!")
         };
         let relative_index = ordinal - start_ord;
-        let batch_index = (relative_index / self.reader.config.dump_size as u64) as usize;
+        let batch_index = (relative_index / self.context.config.dump_size as u64) as usize;
 
         let cache_key = format!("{}-{}", adjusted_ordinal, batch_index);
 
         if !metadata_updated {
-            return Some(cache_key);
+            return Some((*start_ord, self.table_cache.get(&cache_key).unwrap()));
         } else {
             self.table_cache.remove(&cache_key);
         }
 
         let table_load_list = std::iter::once(self.direct_load_table("root", adjusted_ordinal, batch_index))
             .chain(
-                self.reader
+                self.context
                     .table_mappings
                     .keys()
                     .map(|table_name| {
@@ -151,7 +159,7 @@ impl ArrowBatchCache {
             }
         }
 
-        Some(cache_key)
+        Some((*start_ord, self.table_cache.get(&cache_key).unwrap()))
     }
 
     pub fn size(&self) -> usize {

@@ -12,6 +12,7 @@ use arrow::array::{
     Int64Array
 };
 
+use hex::ToHex;
 use zstd::stream::decode_all;
 
 use arrow::datatypes::DataType;
@@ -168,10 +169,11 @@ pub struct ArrowTableMapping {
     pub optional: Option<bool>,
     pub length: Option<usize>,
     pub array: Option<bool>,
+    #[serde(rename = "ref")]
     pub reference: Option<ArrowReference>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ArrowBatchTypes {
     U8(u8),
     U16(u16),
@@ -248,7 +250,7 @@ fn decode_row_value(schema_type: &DataType, column: &Arc<dyn Array>, field: &Arr
         "checksum256" => {
             let base64_val = string_at_dictionary_column(column, schema_type, row_index);
             let bytes_val = base64::decode(base64_val).unwrap();
-            assert!(bytes_val.len() == 32);
+            // assert!(bytes_val.len() == 32);
             let hex_val = hex::encode(bytes_val);
             decoded = ArrowBatchTypes::Checksum256(hex_val);
         },
