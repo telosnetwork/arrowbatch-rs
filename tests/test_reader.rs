@@ -6,7 +6,7 @@ use arrowbatch::{
 #[test]
 fn test_reader() {
     let config = ArrowBatchConfig {
-        data_dir: "/home/g/repos/telosevm-translator/arrow-data-beta-1".to_string(),
+        data_dir: "./arrow-data".to_string(),
         bucket_size: 10_000_000_u64,
         dump_size: 100_000_u64
     };
@@ -24,7 +24,11 @@ fn test_reader() {
 
     assert!(row.refs.contains_key("tx"));
 
-    let tx = row.refs.get("tx").unwrap().get(0).unwrap();
+    let txs = row.refs.get("tx").unwrap();
+
+    assert_eq!(txs.len(), 1);
+
+    let tx = txs.get(0).unwrap();
 
     let tx_hash = match tx.row.get(5).unwrap() {
         ArrowBatchTypes::Checksum256(h) => h,

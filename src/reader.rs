@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Serialize, Deserialize};
 
@@ -11,7 +11,7 @@ use crate::proto::{
 use crate::cache::{ArrowBatchCache, ArrowCachedTables};
 
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RefInfo {
     pub parent_index: usize,
     pub parent_mapping: ArrowTableMapping,
@@ -240,6 +240,8 @@ fn get_rows_by_ref(
     tables: &ArrowCachedTables
 ) -> HashMap<String, Vec<Vec<ArrowBatchTypes>>> {
 
+    println!("get_rows_by_ref {} on {}", referenced_table, referenced_field.name);
+
     let root_mapping = get_table_mapping(referenced_table, &context.table_mappings);
     match root_mapping.iter()
         .position(|m| m.name == referenced_field.name) {
@@ -286,6 +288,8 @@ fn get_rows_by_ref(
             }
         }
 
+        println!("found {} refs to {} on {}", rows.len(), referenced_table, table_name);
+
         refs.insert(table_name.clone(), rows);
     }
 
@@ -300,12 +304,25 @@ fn gen_refs(
 ) -> RowWithRefs {
 
     let references = match context.ref_mappings.get(table_name) {
-        Some(refs) => refs,
+        Some(refs) => {
+            let mut unique_refs = HashSet::new();
+            let mut processed_refs = HashSet::new();
+            for r in refs.values() {
+                let p_ref = (r.parent_index, r.parent_mapping.clone());
+                if !processed_refs.contains(&p_ref) {
+                    processed_refs.insert(p_ref);
+                    unique_refs.insert(r);
+                }
+            }
+            unique_refs
+        },
         None => panic!("No references for \"{}\"", table_name)
     };
     let mut child_row_map = HashMap::new();
 
-    for (_ref_name, reference) in references.iter() {
+    // println!("gen_refs {}: {:?}", table_name, references.keys());
+
+    for reference in references.iter() {
         let refs = get_rows_by_ref(
             context,
             &table_name,

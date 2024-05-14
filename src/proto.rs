@@ -12,7 +12,6 @@ use arrow::array::{
     Int64Array
 };
 
-use hex::ToHex;
 use zstd::stream::decode_all;
 
 use arrow::datatypes::DataType;
@@ -155,13 +154,13 @@ pub fn read_batch(file_path: &str, metadata: &ArrowBatchFileMetadata, batch_inde
     reader.next().unwrap()
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ArrowReference {
     pub table: String,
     pub field: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ArrowTableMapping {
     pub name: String,
     #[serde(rename = "type")]
@@ -173,7 +172,7 @@ pub struct ArrowTableMapping {
     pub reference: Option<ArrowReference>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ArrowBatchTypes {
     U8(u8),
     U16(u16),
