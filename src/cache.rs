@@ -121,8 +121,10 @@ impl<'a> ArrowBatchCache<'a> {
 
         let cache_key = format!("{}-{}", adjusted_ordinal, batch_index);
 
-        if !metadata_updated {
-            return Some((*start_ord, self.table_cache.get(&cache_key).unwrap()));
+        if self.table_cache.contains_key(&cache_key) {
+            if !metadata_updated {
+                return Some((*start_ord, self.table_cache.get(&cache_key).unwrap()));
+            }
         } else {
             self.table_cache.remove(&cache_key);
         }

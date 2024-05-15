@@ -6,7 +6,7 @@ use arrowbatch::{
 #[test]
 fn test_reader() {
     let config = ArrowBatchConfig {
-        data_dir: "./arrow-data".to_string(),
+        data_dir: "../telosevm-translator/arrow-data-beta".to_string(),
         bucket_size: 10_000_000_u64,
         dump_size: 100_000_u64
     };
@@ -16,6 +16,9 @@ fn test_reader() {
     context.reload_on_disk_buckets();
 
     let mut reader = ArrowBatchReader::new(&context);
+
+    let first_block = 180698860_u64;
+    let first_row = reader.get_row(first_block).unwrap();
 
     let block = 180840088_u64;
     let row = reader.get_row(block).unwrap();
