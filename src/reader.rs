@@ -237,8 +237,8 @@ impl ArrowBatchContext {
 }
 
 pub struct ArrowBatchReader<'a> {
-    context: &'a ArrowBatchContext,
-    cache: ArrowBatchCache<'a>,
+    pub context: &'a ArrowBatchContext,
+    pub cache: ArrowBatchCache<'a>,
 }
 
 fn get_rows_by_ref(
