@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
 
 use crate::proto::{
-    read_row, ArrowBatchTypes, ArrowTableMapping
+    read_metadata, read_row, ArrowBatchTypes, ArrowTableMapping
 };
 
 use crate::cache::{ArrowBatchCache, ArrowCachedTables};
@@ -63,7 +63,10 @@ pub struct ArrowBatchContext {
 
     pub table_file_map: TableFileMap,
     pub table_mappings: TableMappings,
-    pub ref_mappings: ReferenceMappings
+    pub ref_mappings: ReferenceMappings,
+
+    pub first_ordinal: Option<u64>,
+    pub last_ordinal: Option<u64>
 }
 
 fn get_table_mapping<'a>(table_name: &String, table_mappings: &'a TableMappings) -> &'a Vec<ArrowTableMapping> {
@@ -143,7 +146,8 @@ impl ArrowBatchContext {
 
             table_file_map,
             table_mappings,
-            ref_mappings
+            ref_mappings,
+            first_ordinal: None, last_ordinal: None
         }
     }
 
@@ -232,6 +236,22 @@ impl ArrowBatchContext {
 
         for bucket in sorted_buckets.iter() {
             self.load_table_file_map(bucket);
+        }
+
+        let last_bucket = self.table_file_map.keys().max();
+        let first_bucket = self.table_file_map.keys().min();
+
+        match (first_bucket, last_bucket) {
+            (Some(first), Some(last)) => {
+                let first_table = self.table_file_map.get(first).unwrap().get("root").unwrap();
+                let first_meta = read_metadata(&first_table).unwrap();
+                self.first_ordinal = Some(first_meta.batches.get(0).unwrap().header.start_ordinal);
+
+                let last_table = self.table_file_map.get(last).unwrap().get("root").unwrap();
+                let last_meta = read_metadata(&last_table).unwrap();
+                self.last_ordinal = Some(last_meta.batches.last().unwrap().header.last_ordinal);
+            },
+            _ => ()
         }
     }
 }

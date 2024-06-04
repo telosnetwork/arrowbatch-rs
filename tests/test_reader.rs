@@ -6,7 +6,7 @@ use arrowbatch::{
 #[test]
 fn test_reader_first_tx() {
     let config = ArrowBatchConfig {
-        data_dir: "./arrow-data-from-333M".to_string(),
+        data_dir: "../arrow-data-from-333M".to_string(),
         bucket_size: 10_000_000_u64,
         dump_size: 100_000_u64
     };
@@ -46,6 +46,9 @@ fn test_reader_first_tx() {
     };
 
     assert_eq!(tx_hash, "45b9db19991400ac90260cad8eea660e63b3856ad974e5eac339edd30c96925e");
+
+    assert_eq!(reader.context.first_ordinal.unwrap(), 332_933_058_u64);
+    assert_eq!(reader.context.last_ordinal.unwrap(), 345_099_999_u64);
 }
 
 

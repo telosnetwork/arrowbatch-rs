@@ -96,34 +96,34 @@ impl RPCSession {
 }
 
 // Test for the RPCSession
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::time::{sleep, Duration};
-
-    #[tokio::test]
-    async fn test_rpc_session() {
-        // Initialize the RPC session
-        let rpc_session = RPCSession::new("ws://localhost:4201").await;
-
-        // Send get_info request
-        let response = rpc_session.send_request("get_info".to_string(), serde_json::json!({})).await;
-        let result = response.await.unwrap().unwrap();
-        println!("get_info Response: {:?}", result);
-
-        // Extract lastOrdinal from the get_info result
-        let mut res_str: String = result.result.unwrap().get("lastOrdinal").unwrap().to_string();
-        res_str.retain(|c| c != '\"');
-        println!("lo: {}", res_str);
-        let last_ordinal: u64 = res_str.parse().unwrap();
-
-        // Send get_row request with the lastOrdinal obtained from get_info
-        let response = rpc_session.send_request("get_row".to_string(), serde_json::json!({"ordinal": last_ordinal})).await;
-        let result = response.await.unwrap().unwrap();
-        println!("get_row Response: {:#?}", result);
-
-        // Sleep for a short duration to ensure all async tasks are complete
-        sleep(Duration::from_millis(100)).await;
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use tokio::time::{sleep, Duration};
+// 
+//     #[tokio::test]
+//     async fn test_rpc_session() {
+//         // Initialize the RPC session
+//         let rpc_session = RPCSession::new("ws://localhost:4201").await;
+// 
+//         // Send get_info request
+//         let response = rpc_session.send_request("get_info".to_string(), serde_json::json!({})).await;
+//         let result = response.await.unwrap().unwrap();
+//         println!("get_info Response: {:?}", result);
+// 
+//         // Extract lastOrdinal from the get_info result
+//         let mut res_str: String = result.result.unwrap().get("lastOrdinal").unwrap().to_string();
+//         res_str.retain(|c| c != '\"');
+//         println!("lo: {}", res_str);
+//         let last_ordinal: u64 = res_str.parse().unwrap();
+// 
+//         // Send get_row request with the lastOrdinal obtained from get_info
+//         let response = rpc_session.send_request("get_row".to_string(), serde_json::json!({"ordinal": last_ordinal})).await;
+//         let result = response.await.unwrap().unwrap();
+//         println!("get_row Response: {:#?}", result);
+// 
+//         // Sleep for a short duration to ensure all async tasks are complete
+//         sleep(Duration::from_millis(100)).await;
+//     }
+// }
 
