@@ -13,8 +13,7 @@ use crate::{
 
 pub struct ArrowMetaCacheEntry {
     pub ts: SystemTime,
-    pub meta: ArrowBatchFileMetadata,
-    pub start_row: Vec<ArrowBatchTypes>,
+    pub meta: ArrowBatchFileMetadata
 }
 
 pub struct ArrowCachedTables {
@@ -67,14 +66,9 @@ impl<'a> ArrowBatchCache<'a> {
             self.metadata_cache.remove(cache_key.as_str());
         }
 
-        let first_table = read_batch(file_path, &meta, 0).unwrap();
-        let mapping = self.context.table_mappings.get("root").unwrap();
-        let start_row = read_row(&first_table, mapping, 0).unwrap();
-
         self.metadata_cache.insert(cache_key.clone(), ArrowMetaCacheEntry {
             ts: SystemTime::now(),
-            meta,
-            start_row,
+            meta
         });
         (
             cache_key,
@@ -112,18 +106,28 @@ impl<'a> ArrowBatchCache<'a> {
 
         let bucket_metadata = self.metadata_cache.get(bucket_metadata_key.as_str()).unwrap();
 
-        let start_ord = match &bucket_metadata.start_row[0] {
-            ArrowBatchTypes::U64(val) => val,
-            _ => panic!("expected index 0 of root row to be u64!")
-        };
-        let relative_index = ordinal - start_ord;
-        let batch_index = (relative_index / self.context.config.dump_size as u64) as usize;
+        let bucket_start_ordinal = bucket_metadata.meta.batches.get(0).unwrap().header.start_ordinal;
+        let bucket_last_ordinal = bucket_metadata.meta.batches.get(
+            bucket_metadata.meta.batches.len() - 1
+        ).unwrap().header.last_ordinal;
+
+        if ordinal < bucket_start_ordinal || ordinal > bucket_last_ordinal {
+            println!("bucket {} -> {}", bucket_start_ordinal, bucket_last_ordinal);
+            return None;
+        }
+
+        let mut batch_index = 0;
+        while ordinal > bucket_metadata.meta.batches.get(batch_index).unwrap().header.last_ordinal {
+            batch_index += 1;
+        }
+
+        let batch_meta = bucket_metadata.meta.batches.get(batch_index).unwrap();
 
         let cache_key = format!("{}-{}", adjusted_ordinal, batch_index);
 
         if self.table_cache.contains_key(&cache_key) {
             if !metadata_updated {
-                return Some((*start_ord, self.table_cache.get(&cache_key).unwrap()));
+                return Some((batch_meta.header.start_ordinal, self.table_cache.get(&cache_key).unwrap()));
             }
         } else {
             self.table_cache.remove(&cache_key);
@@ -161,7 +165,7 @@ impl<'a> ArrowBatchCache<'a> {
             }
         }
 
-        Some((*start_ord, self.table_cache.get(&cache_key).unwrap()))
+        Some((batch_meta.header.start_ordinal, self.table_cache.get(&cache_key).unwrap()))
     }
 
     pub fn size(&self) -> usize {

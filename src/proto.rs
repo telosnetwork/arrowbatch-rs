@@ -45,6 +45,8 @@ pub struct ArrowBatchHeader {
     pub header_constant: String,
     pub batch_byte_size: usize,
     pub compression: ArrowBatchCompression,
+    pub start_ordinal: u64,
+    pub last_ordinal: u64
 }
 
 #[derive(Debug)]
@@ -65,7 +67,7 @@ pub struct ArrowBatchFileMetadata {
 pub const ARROW_BATCH_VERSION_CONSTANT: &'static str = "ARROW-BATCH1";
 pub const GLOBAL_HEADER_SIZE: usize = ARROW_BATCH_VERSION_CONSTANT.len();
 pub const ARROW_BATCH_HEADER_CONSTANT: &'static str = "ARROW-BATCH-TABLE";
-pub const BATCH_HEADER_SIZE: usize = ARROW_BATCH_HEADER_CONSTANT.len() + 8 + 1;
+pub const BATCH_HEADER_SIZE: usize = ARROW_BATCH_HEADER_CONSTANT.len() + 8 + 1 + 8 + 8;
 
 
 pub fn new_global_header() -> Vec<u8> {
@@ -94,7 +96,10 @@ pub fn read_batch_header(buffer: &[u8]) -> ArrowBatchHeader {
         1 => ArrowBatchCompression::Zstd,
         _ => panic!("Invalid compression type"),
     };
-    ArrowBatchHeader { header_constant, batch_byte_size, compression }
+    let ord_info_start = size_start + 8 + 1;
+    let start_ordinal = u64::from_le_bytes(buffer[ord_info_start..ord_info_start+8].try_into().unwrap());
+    let last_ordinal = u64::from_le_bytes(buffer[ord_info_start+8..ord_info_start+16].try_into().unwrap());
+    ArrowBatchHeader { header_constant, batch_byte_size, compression, start_ordinal, last_ordinal }
 }
 
 pub fn read_metadata(file_path: &str) -> io::Result<ArrowBatchFileMetadata> {

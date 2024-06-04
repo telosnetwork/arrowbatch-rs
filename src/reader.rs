@@ -27,9 +27,15 @@ pub struct ArrowBatchRootTable {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ArrowBatchTable {
+    pub map: Vec<ArrowTableMapping>,
+    pub streamSize: Option<String>
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ArrowBatchContextDef {
     pub root: ArrowBatchRootTable,
-    pub others: HashMap<String, Vec<ArrowTableMapping>>,
+    pub others: HashMap<String, ArrowBatchTable>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -48,7 +54,7 @@ pub struct RowWithRefs {
 pub const DEFAULT_TABLE_CACHE_SIZE: usize = 10;
 
 pub type TableFileMap = HashMap<u64, HashMap<String, String>>;
-pub type TableMappings = HashMap<String, Vec<ArrowTableMapping>>;
+pub type TableMappings = HashMap<String, ArrowBatchTable>;
 pub type ReferenceMappings = HashMap<String, HashMap<String, RefInfo>>;
 
 pub struct ArrowBatchContext {
@@ -62,7 +68,7 @@ pub struct ArrowBatchContext {
 
 fn get_table_mapping<'a>(table_name: &String, table_mappings: &'a TableMappings) -> &'a Vec<ArrowTableMapping> {
     match table_mappings.get(table_name) {
-        Some(mapping) => return mapping,
+        Some(mapping) => return &mapping.map,
         None => panic!("No mapping for table \"{}\"", table_name)
     }
 }
@@ -73,10 +79,10 @@ fn gen_mappings_for_table(table_name: &String, table_mappings: &TableMappings) -
     let table_mapping = get_table_mapping(table_name, table_mappings);
 
     for (ref_name, ref_mapping) in table_mappings.iter() {
-        if let Some(child_index) = ref_mapping.iter()
+        if let Some(child_index) = ref_mapping.map.iter()
             .position(|field| field.reference.as_ref().is_some_and(|r| r.table == *table_name)) {
 
-            let child_mapping = ref_mapping[child_index].clone();
+            let child_mapping = ref_mapping.map[child_index].clone();
             let parent_index = table_mapping.iter()
                 .position(|m| m.name == child_mapping.reference.as_ref().unwrap().field).unwrap();
 
@@ -117,7 +123,10 @@ impl ArrowBatchContext {
             }
         );
 
-        table_mappings.insert("root".to_string(), root_mappings);
+        table_mappings.insert("root".to_string(), ArrowBatchTable{
+            map: root_mappings,
+            streamSize: None
+        });
 
         let mut ref_mappings = HashMap::new();
 
@@ -239,9 +248,6 @@ fn get_rows_by_ref(
     reference: &ArrowBatchTypes,
     tables: &ArrowCachedTables
 ) -> HashMap<String, Vec<Vec<ArrowBatchTypes>>> {
-
-    println!("get_rows_by_ref {} on {}", referenced_table, referenced_field.name);
-
     let root_mapping = get_table_mapping(referenced_table, &context.table_mappings);
     match root_mapping.iter()
         .position(|m| m.name == referenced_field.name) {
@@ -288,8 +294,6 @@ fn get_rows_by_ref(
             }
         }
 
-        println!("found {} refs to {} on {}", rows.len(), referenced_table, table_name);
-
         refs.insert(table_name.clone(), rows);
     }
 
@@ -319,8 +323,6 @@ fn gen_refs(
         None => panic!("No references for \"{}\"", table_name)
     };
     let mut child_row_map = HashMap::new();
-
-    // println!("gen_refs {}: {:?}", table_name, references.keys());
 
     for reference in references.iter() {
         let refs = get_rows_by_ref(
@@ -370,7 +372,7 @@ impl<'a> ArrowBatchReader<'a> {
         let table_index = (relative_index % self.context.config.dump_size) as usize;
 
         let root_mapping = self.context.table_mappings.get("root").unwrap();
-        let row = read_row(&tables.root, root_mapping, table_index).unwrap();
+        let row = read_row(&tables.root, &root_mapping.map, table_index).unwrap();
         let result = gen_refs(self.context, &"root".to_string(), &row, &tables);
 
         Some(result)
