@@ -15,7 +15,7 @@ fn test_reader_first_tx() {
 
     context.reload_on_disk_buckets();
 
-    let mut reader = ArrowBatchReader::new(&context);
+    let reader = ArrowBatchReader::new(&context);
 
     let first_block = 332933058_u64;
     let _first_row = reader.get_row(first_block).unwrap();

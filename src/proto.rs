@@ -29,18 +29,18 @@ extern crate base64;
 use serde::{Serialize, Deserialize};
 
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ArrowBatchCompression {
     Uncompressed = 0,
     Zstd = 1,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ArrowBatchGlobalHeader {
     pub version_constant: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ArrowBatchHeader {
     pub header_constant: String,
     pub batch_byte_size: usize,
@@ -49,14 +49,14 @@ pub struct ArrowBatchHeader {
     pub last_ordinal: u64
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ArrowBatchMetadata {
     pub header: ArrowBatchHeader,
     pub start: usize,
     pub end: usize
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ArrowBatchFileMetadata {
     pub size: usize,
     pub header: ArrowBatchGlobalHeader,

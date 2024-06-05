@@ -29,7 +29,7 @@ pub struct ArrowBatchRootTable {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ArrowBatchTable {
     pub map: Vec<ArrowTableMapping>,
-    pub streamSize: Option<String>
+    pub stream_size: Option<String>
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -128,7 +128,7 @@ impl ArrowBatchContext {
 
         table_mappings.insert("root".to_string(), ArrowBatchTable{
             map: root_mappings,
-            streamSize: None
+            stream_size: None
         });
 
         let mut ref_mappings = HashMap::new();
@@ -280,10 +280,10 @@ fn get_rows_by_ref(
     let mut refs = HashMap::new();
 
     for (table_name, table) in tables.others.iter() {
-
-        if (table_name == referenced_table) ||
-            !(references.contains_key(table_name)) ||
-            (references.get(table_name)
+        let this_table = table_name.as_ref();
+        if (this_table == referenced_table) ||
+            !(references.contains_key(this_table)) ||
+            (references.get(this_table)
                 .is_some_and(
                     |r| r.child_mapping.reference.as_ref().unwrap().field != referenced_field.name))
         {
@@ -292,7 +292,7 @@ fn get_rows_by_ref(
 
         let mut rows = Vec::new();
 
-        let mappings = get_table_mapping(table_name, &context.table_mappings);
+        let mappings = get_table_mapping(this_table, &context.table_mappings);
 
         let ref_field_idx = mappings.iter()
             .position(|m| m.reference.as_ref().is_some_and(
@@ -301,7 +301,7 @@ fn get_rows_by_ref(
 
         let mut start_idx: i64 = -1;
         for i in 0..table.num_rows() {
-            let row = read_row(table, mappings, i).unwrap();
+            let row = read_row(&table, mappings, i).unwrap();
 
             if row[ref_field_idx] == *reference {
                 rows.push(row);
@@ -314,7 +314,7 @@ fn get_rows_by_ref(
             }
         }
 
-        refs.insert(table_name.clone(), rows);
+        refs.insert(this_table.clone(), rows);
     }
 
     refs
@@ -382,7 +382,7 @@ impl<'a> ArrowBatchReader<'a> {
         }
     }
 
-    pub fn get_row(&mut self, ordinal: u64) -> Option<RowWithRefs> {
+    pub fn get_row(&self, ordinal: u64) -> Option<RowWithRefs> {
         let (start_ord, tables) = match self.cache.get_tables_for(ordinal) {
             Some(t) => t,
             None => panic!("Tables for \"{}\" not found!", ordinal)

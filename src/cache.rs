@@ -1,7 +1,8 @@
-use std::collections::HashMap;
-use std::time::SystemTime;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use arrow::record_batch::RecordBatch;
+use moka::sync::{Cache, CacheBuilder};
 
 use crate::{
     proto::{
@@ -16,35 +17,36 @@ pub struct ArrowMetaCacheEntry {
     pub meta: ArrowBatchFileMetadata
 }
 
+#[derive(Clone)]
 pub struct ArrowCachedTables {
     pub root: RecordBatch,
-    pub others: HashMap<String, RecordBatch>,
+    pub others: Cache<String, RecordBatch>,
 }
 
 pub struct ArrowBatchCache<'a> {
     context: &'a ArrowBatchContext,
 
-    pub table_cache: HashMap<String, ArrowCachedTables>,
-    pub cache_order: Vec<String>,
-    pub metadata_cache: HashMap<String, ArrowMetaCacheEntry>,
+    pub table_cache: Cache<String, Arc<ArrowCachedTables>>,
+    pub metadata_cache: Cache<String, ArrowBatchFileMetadata>,
 }
 
 impl<'a> ArrowBatchCache<'a> {
-    const DEFAULT_TABLE_CACHE: usize = 10;
+    const DEFAULT_TABLE_CACHE: u64 = 10;
 
     pub fn new(
         context: &'a ArrowBatchContext
     ) -> Self {
         ArrowBatchCache {
             context,
-            table_cache: HashMap::new(),
-            cache_order: Vec::new(),
-            metadata_cache: HashMap::new(),
+            table_cache: Cache::new(Self::DEFAULT_TABLE_CACHE),
+            metadata_cache: CacheBuilder::new(u64::MAX)
+                .time_to_live(Duration::from_secs(60))
+                .build(),
         }
     }
 
     pub fn get_metadata_for(
-        &mut self,
+        &self,
         adjusted_ordinal: u64,
         table_name: &str,
     ) -> (String, bool) {
@@ -60,16 +62,13 @@ impl<'a> ArrowBatchCache<'a> {
         let cache_key = format!("{}-{}", adjusted_ordinal, table_name);
 
         if let Some(cached_meta) = self.metadata_cache.get(cache_key.as_str()) {
-            if cached_meta.meta.size == meta.size {
+            if cached_meta.size == meta.size {
                 return (cache_key, false);
             }
             self.metadata_cache.remove(cache_key.as_str());
         }
 
-        self.metadata_cache.insert(cache_key.clone(), ArrowMetaCacheEntry {
-            ts: SystemTime::now(),
-            meta
-        });
+        self.metadata_cache.insert(cache_key.clone(), meta);
         (
             cache_key,
             true
@@ -98,7 +97,7 @@ impl<'a> ArrowBatchCache<'a> {
         }
     }
 
-    pub fn get_tables_for(&mut self, ordinal: u64) -> Option<(u64, &ArrowCachedTables)> {
+    pub fn get_tables_for(&self, ordinal: u64) -> Option<(u64, Arc<ArrowCachedTables>)> {
         let adjusted_ordinal = self.context.get_ordinal(ordinal);
 
         let (bucket_metadata_key, metadata_updated) =
@@ -106,9 +105,9 @@ impl<'a> ArrowBatchCache<'a> {
 
         let bucket_metadata = self.metadata_cache.get(bucket_metadata_key.as_str()).unwrap();
 
-        let bucket_start_ordinal = bucket_metadata.meta.batches.get(0).unwrap().header.start_ordinal;
-        let bucket_last_ordinal = bucket_metadata.meta.batches.get(
-            bucket_metadata.meta.batches.len() - 1
+        let bucket_start_ordinal = bucket_metadata.batches.get(0).unwrap().header.start_ordinal;
+        let bucket_last_ordinal = bucket_metadata.batches.get(
+            bucket_metadata.batches.len() - 1
         ).unwrap().header.last_ordinal;
 
         if ordinal < bucket_start_ordinal || ordinal > bucket_last_ordinal {
@@ -117,17 +116,18 @@ impl<'a> ArrowBatchCache<'a> {
         }
 
         let mut batch_index = 0;
-        while ordinal > bucket_metadata.meta.batches.get(batch_index).unwrap().header.last_ordinal {
+        while ordinal > bucket_metadata.batches.get(batch_index).unwrap().header.last_ordinal {
             batch_index += 1;
         }
 
-        let batch_meta = bucket_metadata.meta.batches.get(batch_index).unwrap();
+        let batch_meta = bucket_metadata.batches.get(batch_index).unwrap();
 
         let cache_key = format!("{}-{}", adjusted_ordinal, batch_index);
 
         if self.table_cache.contains_key(&cache_key) {
             if !metadata_updated {
-                return Some((batch_meta.header.start_ordinal, self.table_cache.get(&cache_key).unwrap()));
+                let cached_table = self.table_cache.get(&cache_key).unwrap();
+                return Some((batch_meta.header.start_ordinal, cached_table));
             }
         } else {
             self.table_cache.remove(&cache_key);
@@ -144,9 +144,9 @@ impl<'a> ArrowBatchCache<'a> {
             )
             .collect::<Vec<_>>();
 
-        let mut tables = ArrowCachedTables {
+        let tables = ArrowCachedTables {
             root: table_load_list[0].1.as_ref().expect("Root table not found").clone(),
-            others: HashMap::new(),
+            others: Cache::new(Self::DEFAULT_TABLE_CACHE),
         };
 
         for (table_name, table) in table_load_list.into_iter().skip(1) {
@@ -155,20 +155,9 @@ impl<'a> ArrowBatchCache<'a> {
             }
         }
 
-        self.table_cache.insert(cache_key.clone(), tables);
-        self.cache_order.push(cache_key.clone());
-
-        if self.table_cache.len() > Self::DEFAULT_TABLE_CACHE {
-            self.cache_order.remove(0);
-            if let Some(oldest) = self.cache_order.first() {
-                self.table_cache.remove(oldest);
-            }
-        }
+        self.table_cache.insert(cache_key.clone(), Arc::from(tables));
 
         Some((batch_meta.header.start_ordinal, self.table_cache.get(&cache_key).unwrap()))
     }
 
-    pub fn size(&self) -> usize {
-        self.table_cache.len()
-    }
 }
