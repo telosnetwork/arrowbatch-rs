@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use arrow::record_batch::RecordBatch;
@@ -23,18 +23,18 @@ pub struct ArrowCachedTables {
     pub others: Cache<String, RecordBatch>,
 }
 
-pub struct ArrowBatchCache<'a> {
-    context: &'a ArrowBatchContext,
+pub struct ArrowBatchCache {
+    context: Arc<Mutex<ArrowBatchContext>>,
 
     pub table_cache: Cache<String, Arc<ArrowCachedTables>>,
     pub metadata_cache: Cache<String, ArrowBatchFileMetadata>,
 }
 
-impl<'a> ArrowBatchCache<'a> {
+impl ArrowBatchCache {
     const DEFAULT_TABLE_CACHE: u64 = 10;
 
     pub fn new(
-        context: &'a ArrowBatchContext
+        context: Arc<Mutex<ArrowBatchContext>>
     ) -> Self {
         ArrowBatchCache {
             context,
@@ -50,9 +50,9 @@ impl<'a> ArrowBatchCache<'a> {
         adjusted_ordinal: u64,
         table_name: &str,
     ) -> (String, bool) {
-        let file_path = self
-            .context
-            .table_file_map
+        let table_file_map =
+            self.context.lock().unwrap().table_file_map.clone();
+        let file_path = table_file_map
             .get(&adjusted_ordinal)
             .and_then(|m| m.get(table_name))
             .expect(format!("File path for {}-{} not found", adjusted_ordinal, table_name).as_str());
@@ -81,9 +81,10 @@ impl<'a> ArrowBatchCache<'a> {
         adjusted_ordinal: u64,
         batch_index: usize,
     ) -> (String, Option<RecordBatch>) {
-        let file_path = self
-            .context
-            .table_file_map
+        let table_file_map =
+            self.context.lock().unwrap().table_file_map.clone();
+
+        let file_path = table_file_map
             .get(&adjusted_ordinal)
             .and_then(|m| m.get(table_name));
 
@@ -98,7 +99,7 @@ impl<'a> ArrowBatchCache<'a> {
     }
 
     pub fn get_tables_for(&self, ordinal: u64) -> Option<(u64, Arc<ArrowCachedTables>)> {
-        let adjusted_ordinal = self.context.get_ordinal(ordinal);
+        let adjusted_ordinal = self.context.lock().unwrap().get_ordinal(ordinal);
 
         let (bucket_metadata_key, metadata_updated) =
             self.get_metadata_for(adjusted_ordinal, "root");
@@ -133,10 +134,10 @@ impl<'a> ArrowBatchCache<'a> {
             self.table_cache.remove(&cache_key);
         }
 
+        let table_mappings = self.context.lock().unwrap().table_mappings.clone();
         let table_load_list = std::iter::once(self.direct_load_table("root", adjusted_ordinal, batch_index))
             .chain(
-                self.context
-                    .table_mappings
+                    table_mappings
                     .keys()
                     .map(|table_name| {
                         self.direct_load_table(table_name, adjusted_ordinal, batch_index)

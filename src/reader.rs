@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use serde::{Serialize, Deserialize};
 
@@ -106,7 +107,7 @@ fn gen_mappings_for_table(table_name: &String, table_mappings: &TableMappings) -
 impl ArrowBatchContext {
     pub fn new(
         config: ArrowBatchConfig
-    ) -> Self {
+    ) -> Arc<Mutex<Self>> {
         let table_file_map = HashMap::new();
 
         let data_def_string = fs::read_to_string(
@@ -140,7 +141,7 @@ impl ArrowBatchContext {
             );
         }
 
-        ArrowBatchContext {
+        let mut new_context = ArrowBatchContext {
             config,
             data_definition: defs,
 
@@ -148,7 +149,11 @@ impl ArrowBatchContext {
             table_mappings,
             ref_mappings,
             first_ordinal: None, last_ordinal: None
-        }
+        };
+        new_context.reload_on_disk_buckets();
+        let context_arc = Arc::new(Mutex::new(new_context));
+
+        context_arc
     }
 
     pub fn get_ordinal(&self, ordinal: u64) -> u64 {
@@ -256,18 +261,19 @@ impl ArrowBatchContext {
     }
 }
 
-pub struct ArrowBatchReader<'a> {
-    pub context: &'a ArrowBatchContext,
-    pub cache: ArrowBatchCache<'a>,
+pub struct ArrowBatchReader {
+    pub context: Arc<Mutex<ArrowBatchContext>>,
+    pub cache: ArrowBatchCache,
 }
 
 fn get_rows_by_ref(
-    context: &ArrowBatchContext,
+    context: Arc<Mutex<ArrowBatchContext>>,
     referenced_table: &String,
     referenced_field: &ArrowTableMapping,
     reference: &ArrowBatchTypes,
     tables: &ArrowCachedTables
 ) -> HashMap<String, Vec<Vec<ArrowBatchTypes>>> {
+    let context = context.lock().unwrap();
     let root_mapping = get_table_mapping(referenced_table, &context.table_mappings);
     match root_mapping.iter()
         .position(|m| m.name == referenced_field.name) {
@@ -321,13 +327,14 @@ fn get_rows_by_ref(
 }
 
 fn gen_refs(
-    context: &ArrowBatchContext,
+    context: &Arc<Mutex<ArrowBatchContext>>,
     table_name: &String,
     row: &Vec<ArrowBatchTypes>,
     tables: &ArrowCachedTables
 ) -> RowWithRefs {
 
-    let references = match context.ref_mappings.get(table_name) {
+    let ref_mappings = context.lock().unwrap().ref_mappings.clone();
+    let references = match ref_mappings.get(table_name) {
         Some(refs) => {
             let mut unique_refs = HashSet::new();
             let mut processed_refs = HashSet::new();
@@ -346,7 +353,7 @@ fn gen_refs(
 
     for reference in references.iter() {
         let refs = get_rows_by_ref(
-            context,
+            context.clone(),
             &table_name,
             &reference.parent_mapping,
             &row[reference.parent_index],
@@ -371,13 +378,13 @@ fn gen_refs(
 
 }
 
-impl<'a> ArrowBatchReader<'a> {
+impl ArrowBatchReader {
 
     pub fn new(
-        context: &'a ArrowBatchContext
+        context: Arc<Mutex<ArrowBatchContext>>
     ) -> Self {
         ArrowBatchReader {
-            context,
+            context: context.clone(),
             cache: ArrowBatchCache::new(context),
         }
     }
@@ -385,15 +392,17 @@ impl<'a> ArrowBatchReader<'a> {
     pub fn get_row(&self, ordinal: u64) -> Option<RowWithRefs> {
         let (start_ord, tables) = match self.cache.get_tables_for(ordinal) {
             Some(t) => t,
-            None => panic!("Tables for \"{}\" not found!", ordinal)
+            None => return None
         };
 
+        let context = self.context.lock().unwrap();
         let relative_index = ordinal - start_ord;
-        let table_index = (relative_index % self.context.config.dump_size) as usize;
+        let table_index = (relative_index % context.config.dump_size) as usize;
+        let root_mapping = context.table_mappings.get("root").unwrap();
+        drop(context);
 
-        let root_mapping = self.context.table_mappings.get("root").unwrap();
         let row = read_row(&tables.root, &root_mapping.map, table_index).unwrap();
-        let result = gen_refs(self.context, &"root".to_string(), &row, &tables);
+        let result = gen_refs(&self.context, &"root".to_string(), &row, &tables);
 
         Some(result)
     }
