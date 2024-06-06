@@ -399,9 +399,9 @@ impl ArrowBatchReader {
         let relative_index = ordinal - start_ord;
         let table_index = (relative_index % context.config.dump_size) as usize;
         let root_mapping = context.table_mappings.get("root").unwrap();
+        let row = read_row(&tables.root, &root_mapping.map, table_index).unwrap();
         drop(context);
 
-        let row = read_row(&tables.root, &root_mapping.map, table_index).unwrap();
         let result = gen_refs(&self.context, &"root".to_string(), &row, &tables);
 
         Some(result)
