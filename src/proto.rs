@@ -12,6 +12,7 @@ use arrow::array::{
     Int64Array
 };
 
+use serde_json::Value;
 use zstd::stream::decode_all;
 
 use arrow::datatypes::DataType;
@@ -160,12 +161,6 @@ pub fn read_batch(file_path: &str, metadata: &ArrowBatchFileMetadata, batch_inde
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ArrowReference {
-    pub table: String,
-    pub field: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ArrowTableMapping {
     pub name: String,
     #[serde(rename = "type")]
@@ -173,8 +168,6 @@ pub struct ArrowTableMapping {
     pub optional: Option<bool>,
     pub length: Option<usize>,
     pub array: Option<bool>,
-    #[serde(rename = "ref")]
-    pub reference: Option<ArrowReference>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -193,12 +186,16 @@ pub enum ArrowBatchTypes {
     Checksum160(String),
     Checksum256(String),
 
+    Struct(Value),
+
     U16Array(Vec<u16>),
     U32Array(Vec<u32>),
     U64Array(Vec<u64>),
 
     BytesArray(Vec<Vec<u8>>),
     StrArray(Vec<String>),
+
+    StructArray(Vec<Value>)
 }
 
 fn decode_row_value(schema_type: &DataType, column: &Arc<dyn Array>, field: &ArrowTableMapping, row_index: usize) -> ArrowBatchTypes {
@@ -258,6 +255,11 @@ fn decode_row_value(schema_type: &DataType, column: &Arc<dyn Array>, field: &Arr
             let hex_val = hex::encode(bytes_val);
             decoded = ArrowBatchTypes::Checksum256(hex_val);
         },
+        "struct" => {
+            let base64_val = string_at_dictionary_column(column, schema_type, row_index);
+            let struct_val: Value = serde_json::from_str(base64_val).unwrap();
+            decoded = ArrowBatchTypes::Struct(struct_val);
+        }
         _ => {
             panic!("Unsupported field {}", field.data_type);
         }
@@ -315,6 +317,13 @@ pub fn read_row(record_batch: &RecordBatch, mapping: &Vec<ArrowTableMapping>, ro
                     decode_rlp_array(bytes_array, |rlp, i| {
                         let bytes = rlp.val_at::<Vec<u8>>(i).unwrap_or_default();
                         Ok(String::from_utf8(bytes).unwrap_or_default())
+                    })),
+                "struct" => ArrowBatchTypes::StructArray(
+                    decode_rlp_array(bytes_array, |rlp, i| {
+                        let b64_bytes = rlp.val_at::<Vec<u8>>(i).unwrap_or_default();
+                        let struct_val: Value = serde_json::from_str(
+                            String::from_utf8(b64_bytes).unwrap().as_str()).unwrap();
+                        Ok(struct_val)
                     })),
 
                 _ => return Err(ArrowError::ParseError("Unsupported field type".to_string())),
