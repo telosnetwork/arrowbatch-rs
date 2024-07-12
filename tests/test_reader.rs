@@ -6,7 +6,7 @@ use arrowbatch::{
 #[test]
 fn test_reader_first_tx() {
     let config = ArrowBatchConfig {
-        data_dir: "../telosevm-translator/arrow-data".to_string(),
+        data_dir: "/data/arrow-data-full".to_string(),
         bucket_size: 10_000_000_u64,
         dump_size: 100_000_u64
     };

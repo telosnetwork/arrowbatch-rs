@@ -226,14 +226,14 @@ impl ArrowBatchReader {
     }
 
     pub fn get_row(&self, ordinal: u64) -> Option<ArrowRow> {
-        let adjusted_ordinal = self.context.lock().unwrap().get_ordinal(ordinal);
-        let table = match self.cache.get_table_for(ordinal) {
+        let context = Arc::new(self.context.lock().unwrap());
+        let adjusted_ordinal = context.get_ordinal(ordinal);
+        let table = match self.cache.get_table_for(ordinal, Some(context.clone())) {
             Some(t) => t,
             None => return None
         };
         let meta = self.cache.metadata_cache.get(&adjusted_ordinal).unwrap();
 
-        let context = self.context.lock().unwrap();
         let (_, relative_index) = get_relative_table_index(ordinal, &meta);
         let row = read_row(&table, &context.table_mapping, relative_index as usize).unwrap();
         drop(context);

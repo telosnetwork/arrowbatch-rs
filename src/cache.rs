@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::fs::metadata;
 use std::time::Duration;
 
@@ -38,11 +38,17 @@ impl ArrowBatchCache {
 
     pub fn get_metadata_for(
         &self,
-        adjusted_ordinal: u64
+        adjusted_ordinal: u64,
+        locked_context: Option<Arc<MutexGuard<ArrowBatchContext>>>
     ) -> (u64, bool) {
-        let table_file_map =
-            self.context.lock().unwrap().table_file_map.clone();
-        let file_path = table_file_map
+        let must_lock = locked_context.is_none();
+        let context = if must_lock {
+            Arc::new(self.context.lock().unwrap())
+        } else {
+            locked_context.unwrap()
+        };
+
+        let file_path = context.table_file_map
             .get(&adjusted_ordinal)
             .expect(format!("File path for {} not found", adjusted_ordinal).as_str());
 
@@ -58,6 +64,9 @@ impl ArrowBatchCache {
 
         let meta = read_metadata(file_path).unwrap();
         self.metadata_cache.insert(adjusted_ordinal, meta);
+        if must_lock {
+            drop(context);
+        }
         (
             adjusted_ordinal,
             true
@@ -67,13 +76,24 @@ impl ArrowBatchCache {
     pub fn direct_load_table(
         &self,
         adjusted_ordinal: u64,
-        batch_index: usize
+        batch_index: usize,
+        locked_context: Option<Arc<MutexGuard<ArrowBatchContext>>>
     ) -> Option<RecordBatch> {
-        let table_file_map =
-            self.context.lock().unwrap().table_file_map.clone();
+        let must_lock = locked_context.is_none();
+        let context = if must_lock {
+            Arc::new(self.context.lock().unwrap())
+        } else {
+            locked_context.unwrap()
+        };
+
+        let table_file_map = context.table_file_map.clone();
 
         let file_path = table_file_map
             .get(&adjusted_ordinal);
+
+        if must_lock {
+            drop(context);
+        }
 
         match file_path {
             Some(path) => {
@@ -85,11 +105,22 @@ impl ArrowBatchCache {
         }
     }
 
-    pub fn get_table_for(&self, ordinal: u64) -> Option<Arc<RecordBatch>> {
-        let adjusted_ordinal = self.context.lock().unwrap().get_ordinal(ordinal);
+    pub fn get_table_for(
+        &self,
+        ordinal: u64,
+        locked_context: Option<Arc<MutexGuard<ArrowBatchContext>>>
+    ) -> Option<Arc<RecordBatch>> {
+        let must_lock = locked_context.is_none();
+        let context = if must_lock {
+            Arc::new(self.context.lock().unwrap())
+        } else {
+            locked_context.unwrap()
+        };
+
+        let adjusted_ordinal = context.get_ordinal(ordinal);
 
         let (bucket_metadata_key, metadata_updated) =
-            self.get_metadata_for(adjusted_ordinal);
+            self.get_metadata_for(adjusted_ordinal, Some(context.clone()));
 
         let bucket_metadata = self.metadata_cache.get(&bucket_metadata_key).unwrap();
 
@@ -106,9 +137,17 @@ impl ArrowBatchCache {
             self.table_cache.remove(&cache_key);
         }
 
-        let table = self.direct_load_table(adjusted_ordinal, batch_index as usize).unwrap();
+        let table = self.direct_load_table(
+            adjusted_ordinal,
+            batch_index as usize,
+            Some(context.clone())
+        ).unwrap();
 
         self.table_cache.insert(cache_key.clone(), Arc::from(table));
+
+        if must_lock {
+            drop(context);
+        };
 
         Some(self.table_cache.get(&cache_key).unwrap())
     }
