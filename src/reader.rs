@@ -3,10 +3,12 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use arrow::array::RecordBatch;
+use log::debug;
 use serde::{Serialize, Deserialize};
 
 use crate::proto::{
-    read_metadata, read_row, ArrowBatchFileMetadata, ArrowBatchTypes, ArrowTableMapping
+    read_batch, read_metadata, read_row, ArrowBatchFileMetadata, ArrowBatchTypes, ArrowTableMapping
 };
 
 use crate::cache::ArrowBatchCache;
@@ -47,7 +49,14 @@ pub struct ArrowBatchContext {
     pub wip_file: Option<String>,
 
     pub first_ordinal: Option<u64>,
-    pub last_ordinal: Option<u64>
+    pub last_ordinal: Option<u64>,
+}
+
+pub struct ArrowBatchIterContext {
+    pub current_block: u64,
+
+    pub current_table: Option<Arc<RecordBatch>>,
+    pub current_meta: Option<Arc<ArrowBatchFileMetadata>>
 }
 
 pub fn get_relative_table_index(ordinal: u64, meta: &ArrowBatchFileMetadata) -> (u64, u64) {
@@ -239,5 +248,109 @@ impl ArrowBatchReader {
         drop(context);
 
         Some(row)
+    }
+}
+
+pub struct ArrowBatchSequentialReader {
+    pub context: Arc<Mutex<ArrowBatchContext>>,
+    pub iter_ctx: Arc<Mutex<ArrowBatchIterContext>>,
+    pub start_ordinal: u64,
+    pub stop_ordinal: u64,
+}
+
+impl ArrowBatchSequentialReader {
+
+    pub fn new(
+        from: u64, to: u64,
+        context: Arc<Mutex<ArrowBatchContext>>
+    ) -> Self {
+        let iter_ctx = Arc::new(Mutex::new(ArrowBatchIterContext{
+            current_block: from - 1,
+            current_meta: None,
+            current_table: None
+        }));
+        ArrowBatchSequentialReader {
+            context: context.clone(),
+            iter_ctx,
+            start_ordinal: from,
+            stop_ordinal: to,
+        }
+    }
+
+    fn ensure_tables(&self) {
+        let context = Arc::new(self.context.lock().unwrap());
+        let mut iter_ctx = self.iter_ctx.lock().unwrap();
+
+        let last_adjusted_ordinal = context.get_ordinal(iter_ctx.current_block);
+        let next_block = iter_ctx.current_block + 1;
+        let new_adjusted_ordinal = context.get_ordinal(next_block);
+
+        let bucket_metadata = match iter_ctx.current_meta.clone() {
+            Some(val) => val,
+            None => {
+                let file_path = context.table_file_map
+                    .get(&new_adjusted_ordinal)
+                    .expect(&format!("File path for {} not found", new_adjusted_ordinal));
+
+                let meta = Arc::new(read_metadata(file_path).unwrap());
+
+                iter_ctx.current_meta = Some(meta.clone());
+
+                meta
+            }
+        };
+
+        let (last_batch_index, _) = get_relative_table_index(iter_ctx.current_block, &bucket_metadata);
+        let (new_batch_index, _) = get_relative_table_index(next_block, &bucket_metadata);
+
+        let must_update = last_adjusted_ordinal != new_adjusted_ordinal || last_batch_index != new_batch_index;
+
+        if iter_ctx.current_table.is_none() || must_update {
+            let bucket_metadata = iter_ctx.current_meta.clone().unwrap();
+
+            let (batch_index, _) = get_relative_table_index(next_block, &bucket_metadata);
+
+            let file_path = context.table_file_map
+                .get(&new_adjusted_ordinal)
+                .expect(&format!("File path for {} not found", new_adjusted_ordinal));
+
+            let table = read_batch(
+                file_path,
+                &bucket_metadata,
+                batch_index as usize
+            ).unwrap();
+
+            iter_ctx.current_table = Some(Arc::new(table));
+        }
+    }
+
+    pub fn imut_next(&self) -> Option<ArrowRow> {
+        let mut iter_ctx = self.iter_ctx.lock().unwrap();
+        if iter_ctx.current_block > self.stop_ordinal {
+            return None;
+        }
+        drop(iter_ctx);
+        self.ensure_tables();
+        iter_ctx = self.iter_ctx.lock().unwrap();
+        iter_ctx.current_block += 1;
+        let context = Arc::new(self.context.lock().unwrap());
+
+        let meta = iter_ctx.current_meta.clone().unwrap();
+        let table = iter_ctx.current_table.clone().unwrap();
+
+        let (_, relative_index) = get_relative_table_index(iter_ctx.current_block, &meta);
+        let row = read_row(&table, &context.table_mapping, relative_index as usize).unwrap();
+        drop(context);
+        drop(iter_ctx);
+
+        Some(row)
+    }
+}
+
+impl Iterator for ArrowBatchSequentialReader {
+    type Item = ArrowRow;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.imut_next()
     }
 }

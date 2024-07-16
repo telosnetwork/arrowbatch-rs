@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::fs::metadata;
 
 use arrow::record_batch::RecordBatch;
 use moka::sync::Cache;
@@ -37,7 +36,7 @@ impl ArrowBatchCache {
         &self,
         adjusted_ordinal: u64,
         locked_context: Option<Arc<MutexGuard<ArrowBatchContext>>>
-    ) -> (u64, bool) {
+    ) -> u64 {
         let must_lock = locked_context.is_none();
         let context = if must_lock {
             Arc::new(self.context.lock().unwrap())
@@ -49,14 +48,8 @@ impl ArrowBatchCache {
             .get(&adjusted_ordinal)
             .expect(format!("File path for {} not found", adjusted_ordinal).as_str());
 
-        if let Some(cached_meta) = self.metadata_cache.get(&adjusted_ordinal) {
-            let file_fs_meta = metadata(file_path);
-            let file_size = file_fs_meta.unwrap().len();
-
-            if cached_meta.size == (file_size as usize) {
-                return (adjusted_ordinal, false);
-            }
-            self.metadata_cache.remove(&adjusted_ordinal);
+        if self.metadata_cache.contains_key(&adjusted_ordinal) {
+            return adjusted_ordinal;
         }
 
         let meta = read_metadata(file_path).unwrap();
@@ -64,10 +57,7 @@ impl ArrowBatchCache {
         if must_lock {
             drop(context);
         }
-        (
-            adjusted_ordinal,
-            true
-        )
+        adjusted_ordinal
     }
 
     pub fn direct_load_table(
@@ -116,7 +106,7 @@ impl ArrowBatchCache {
 
         let adjusted_ordinal = context.get_ordinal(ordinal);
 
-        let (bucket_metadata_key, metadata_updated) =
+        let bucket_metadata_key =
             self.get_metadata_for(adjusted_ordinal, Some(context.clone()));
 
         let bucket_metadata = self.metadata_cache.get(&bucket_metadata_key).unwrap();
@@ -126,12 +116,8 @@ impl ArrowBatchCache {
         let cache_key = format!("{}-{}", adjusted_ordinal, batch_index);
 
         if self.table_cache.contains_key(&cache_key) {
-            if !metadata_updated {
-                let cached_table = self.table_cache.get(&cache_key).unwrap();
-                return Some(cached_table);
-            }
-        } else {
-            self.table_cache.remove(&cache_key);
+            let cached_table = self.table_cache.get(&cache_key).unwrap();
+            return Some(cached_table);
         }
 
         let table = self.direct_load_table(
@@ -140,13 +126,15 @@ impl ArrowBatchCache {
             Some(context.clone())
         ).unwrap();
 
-        self.table_cache.insert(cache_key.clone(), Arc::from(table));
+        let arc_table = Arc::new(table);
+
+        self.table_cache.insert(cache_key.clone(), arc_table.clone());
 
         if must_lock {
             drop(context);
         };
 
-        Some(self.table_cache.get(&cache_key).unwrap())
+        Some(arc_table)
     }
 
 }
