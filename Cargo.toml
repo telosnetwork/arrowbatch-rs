@@ -1,6 +1,6 @@
 [package]
 name = "arrowbatch"
-version = "1.13.0"
+version = "1.13.1"
 edition = "2021"
 authors = ["Guillermo Rodriguez <guillermo@telos.net>"]
 description = "Reader for arrow-batch format"

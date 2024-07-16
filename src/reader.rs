@@ -289,30 +289,45 @@ impl ArrowBatchSequentialReader {
             Some(val) => val,
             None => {
                 let file_path = context.table_file_map
-                    .get(&new_adjusted_ordinal)
-                    .expect(&format!("File path for {} not found", new_adjusted_ordinal));
+                    .get(&last_adjusted_ordinal)
+                    .expect(&format!("File path for {} not found", last_adjusted_ordinal));
 
                 let meta = Arc::new(read_metadata(file_path).unwrap());
 
                 iter_ctx.current_meta = Some(meta.clone());
+                debug!("load meta for {}", last_adjusted_ordinal);
 
                 meta
             }
         };
 
         let (last_batch_index, _) = get_relative_table_index(iter_ctx.current_block, &bucket_metadata);
-        let (new_batch_index, _) = get_relative_table_index(next_block, &bucket_metadata);
 
-        let must_update = last_adjusted_ordinal != new_adjusted_ordinal || last_batch_index != new_batch_index;
+        let must_update_meta = next_block > bucket_metadata.batches[bucket_metadata.batches.len() - 1].header.last_ordinal;
 
-        if iter_ctx.current_table.is_none() || must_update {
-            let bucket_metadata = iter_ctx.current_meta.clone().unwrap();
-
-            let (batch_index, _) = get_relative_table_index(next_block, &bucket_metadata);
-
+        if must_update_meta {
             let file_path = context.table_file_map
                 .get(&new_adjusted_ordinal)
                 .expect(&format!("File path for {} not found", new_adjusted_ordinal));
+
+            let bucket_metadata = Arc::new(read_metadata(file_path).unwrap());
+
+            iter_ctx.current_meta = Some(bucket_metadata.clone());
+        }
+
+        let (new_batch_index, _) = get_relative_table_index(next_block, &iter_ctx.current_meta.clone().unwrap());
+
+        if iter_ctx.current_table.is_none() || last_batch_index != new_batch_index {
+            let file_path = context.table_file_map
+                .get(&new_adjusted_ordinal)
+                .expect(&format!("File path for {} not found", new_adjusted_ordinal));
+
+            let bucket_metadata = Arc::new(read_metadata(file_path).unwrap());
+
+            iter_ctx.current_meta = Some(bucket_metadata.clone());
+            debug!("load meta for {}", new_adjusted_ordinal);
+
+            let (batch_index, _) = get_relative_table_index(next_block, &bucket_metadata);
 
             let table = read_batch(
                 file_path,
