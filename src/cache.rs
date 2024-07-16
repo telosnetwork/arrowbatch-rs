@@ -1,9 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::fs::metadata;
-use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
-use moka::sync::{Cache, CacheBuilder};
+use moka::sync::Cache;
 
 use crate::reader::get_relative_table_index;
 use crate::{
@@ -22,7 +21,7 @@ pub struct ArrowBatchCache {
 }
 
 impl ArrowBatchCache {
-    const DEFAULT_TABLE_CACHE: u64 = 10;
+    const DEFAULT_TABLE_CACHE: u64 = 3;
 
     pub fn new(
         context: Arc<Mutex<ArrowBatchContext>>
@@ -30,9 +29,7 @@ impl ArrowBatchCache {
         ArrowBatchCache {
             context,
             table_cache: Cache::new(Self::DEFAULT_TABLE_CACHE),
-            metadata_cache: CacheBuilder::new(u64::MAX)
-                .time_to_live(Duration::from_secs(60))
-                .build(),
+            metadata_cache: Cache::new(Self::DEFAULT_TABLE_CACHE),
         }
     }
 
