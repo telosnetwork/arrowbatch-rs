@@ -249,6 +249,10 @@ impl ArrowBatchReader {
 
         Some(row)
     }
+
+    pub fn iter(&self, from: u64, to: u64) -> ArrowBatchSequentialReader {
+        ArrowBatchSequentialReader::new(from, to, self.context.clone())
+    }
 }
 
 pub struct ArrowBatchSequentialReader {
